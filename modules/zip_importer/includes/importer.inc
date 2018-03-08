@@ -142,8 +142,8 @@ class ZipBatchImporter extends IslandoraBatchImporter {
     $zip = new ZipArchive();
     if (($error = $zip->open(drupal_realpath($file->uri))) !== TRUE) {
       drupal_set_message(t('Error opening the provided Zip file.  Code: %code', array(
-            '%code' => $error,
-          )));
+        '%code' => $error,
+      )));
       return;
     }
 
@@ -182,6 +182,7 @@ class ZipBatchImportObject extends IslandoraImportObject {
   protected static $DC2MODS = '';
   protected static $DWC2DC = '';
   protected static $MADS2DC = '';
+  protected static $RDF2DC = '';
   protected static $transformPath = '';
 
   /**
@@ -207,6 +208,10 @@ class ZipBatchImportObject extends IslandoraImportObject {
 
       if (self::$MADS2DC == '') {
         self::$MADS2DC = self::$transformPath . "/mads_to_dc.xsl";
+      }
+
+      if (self::$RDF2DC == '') {
+        self::$RDF2DC = variable_get('zip_importer_path_rdf_to_dc', self::$transformPath . "/rdf_to_dc.xsl");
       }
     }
   }
@@ -341,6 +346,13 @@ class ZipBatchImportObject extends IslandoraImportObject {
           $mimetype = 'application/xml';
         }
 
+        elseif ($this->isRDF($this->getXML())) {
+          // For RDF file, set datastream to RDF and skips the detection.
+          $do_determine_dsid_and_mimetype = FALSE;
+          $dsid = 'RDF';
+          $mimetype = 'application/rdf+xml';
+        }
+
         else {
           // XML streams are handled via the parent implementation,
           // (via get_{mods,dc}()) so let's go to the next item.
@@ -397,6 +409,40 @@ class ZipBatchImportObject extends IslandoraImportObject {
     }
 
     return $to_return;
+  }
+
+  // Override parent getTitle().
+  public function getTitle() {
+    
+    if ($this->title === NULL) {
+      // RDF
+      $xml = $this->getXML();
+      if ($this->isRDF($xml)) {
+        $rdf_doc = new DOMDocument();
+        $rdf_doc->loadXML($xml);
+        $xpath = new DOMXPath($rdf_doc);
+        $xpath->registerNamespace("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#");
+        $xpath->registerNamespace("dcterms", "http://purl.org/dc/terms/");
+        $xpath->registerNamespace("wgs84", "http://www.w3.org/2003/01/geo/wgs84_pos#");
+        $xpath->registerNamespace("schema", "http://schema.org");
+        $xpath->registerNamespace("dc", "http://purl.org/dc/elements/1.1/");
+
+        $this->title = $xpath->evaluate('string(//dc:title)');
+      }
+      else {
+        $mods = $this->getMODS();
+        if ($mods) {
+          $mods_doc = new DOMDocument();
+          $mods_doc->loadXML($mods);
+          $mods_xpath = new DOMXPath($mods_doc);
+          $mods_xpath->registerNamespace('m', 'http://www.loc.gov/mods/v3');
+
+          $this->title = $mods_xpath->evaluate('string(//m:mods/m:titleInfo/m:title/text())');
+        }
+      }
+    }
+
+    return $this->title;
   }
 
   /**
@@ -469,6 +515,10 @@ EOXML;
       }
       elseif ($this->isMADS($xml)) {
         $this->dc = static::runXSLTransform(array('input' => $xml, 'xsl' => self::$MADS2DC));
+      }
+      // Added by jh
+      elseif ($this->isRDF($xml)) {
+        $this->dc = static::runXSLTransform(array('input' => $xml, 'xsl' => self::$RDF2DC));
       }
       // Otherwise, call the parent implementation (transform from MODS).
       if (empty($this->dc)) {
@@ -570,6 +620,14 @@ EOXML;
    */
   protected function isDC($xml) {
     return $this->getLocalNameOfRootElement($xml) == 'dc';
+  }
+
+  /**
+   * Checks if the given file content is actually a RDF document.
+   */
+  protected function isRDF($xml) {
+    $localNameOfRootElement = $this->getLocalNameOfRootElement($xml);
+    return strtolower($localNameOfRootElement) == 'rdf';
   }
 
   /**
